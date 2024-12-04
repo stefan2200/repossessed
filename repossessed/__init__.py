@@ -23,7 +23,7 @@ def download_and_extract(build_blob_url, output_directory=None):
     headers = {
         "User-Agent": "docker/20.10.8 go/go1.13.15 git-commit/fa9b5b2 kernel/4.19.128-microsoft-standard os/linux arch/amd64 UpstreamClient(Docker-Client/19.03.13 (linux))"
     }
-    response = requests.get(build_blob_url, headers=headers, stream=True)
+    response = requests.get(build_blob_url, headers=headers, stream=True, verify=False)
     response.raise_for_status()  # Check for request errors
 
     # Write the downloaded content to a file
@@ -56,9 +56,14 @@ def read_digests(read_manifest):
 
 
 def snipe_repo(host, repo, tag, index=0, first=0, run_on_folder=None, run_classifier=False):
-    build_manifest = f"http://{host}/v2/{repo}/manifests/{tag}"
+    http = "http"
+    check_tls = host_https(host)
+    if check_tls:
+        http = "https"
+    build_manifest = f"{http}://{host}/v2/{repo}/manifests/{tag}"
     get_manifest = requests.get(build_manifest, headers={
-        "Accept": "application/vnd.oci.image.index.v1+json,application/vnd.oci.image.manifest.v1+json"})
+        "Accept": "application/vnd.oci.image.index.v1+json,application/vnd.oci.image.manifest.v1+json"},
+                                verify=False)
     read_manifest = get_manifest.json()
     to_download = []
     get_digests = read_digests(read_manifest)
@@ -74,13 +79,30 @@ def snipe_repo(host, repo, tag, index=0, first=0, run_on_folder=None, run_classi
     temp_dir = tempfile.mkdtemp()
     logging.info(f"Downloading to temp directory: {temp_dir}")
     for digest in to_download:
-        build_blob = f"http://{host}/v2/{repo}/blobs/{digest}"
+        build_blob = f"{http}://{host}/v2/{repo}/blobs/{digest}"
         download_and_extract(build_blob, temp_dir)
     if run_classifier:
         classifier.run_classifier(temp_dir)
     if run_on_folder:
         subprocess.run([run_on_folder, temp_dir])
     print(f"Docker image data extracted to {temp_dir}")
+
+
+def host_https(host):
+    if ":5000" in host:
+        # Most likely ones to occur
+        return False
+    if ":443" in host:
+        # Most likely ones to occur
+        return True
+    try:
+        get_http = f"http://{host}/"
+        if requests.get(get_http, timeout=(2, 5)).status_code == 200:
+            return False
+    except requests.exceptions.RequestException:
+        pass
+    print("Host likely uses SSL or blocks access to repositories")
+    return True
 
 
 def handle_enum(host, search=None):
@@ -97,7 +119,7 @@ def handle_enum(host, search=None):
                 if search not in repo or search not in tag:
                     continue
             print(f"Repository: {repo} Tag: {tag}")
-            print(f"{sys.argv[0]} -H {host} -r {repo} -t {tag} --first 5")
+            print(f"{sys.argv[0]} dump -H {host} -r {repo} -t {tag} --first 5")
         print("")
 
 
@@ -157,6 +179,7 @@ def main():
 
     # Parse arguments
     args = parser.parse_args()
+    requests.packages.urllib3.disable_warnings()
 
     # Handle subcommands
     if args.command == "enum":
@@ -164,7 +187,7 @@ def main():
     elif args.command == "dump":
         # Access and log dump arguments
         logging.info(f"Host: {args.host} Repo: {args.repo} Tag: {args.tag}")
-        snipe_repo(args.host, args.repo, args.tag, args.index, args.first, args.run_on_folder, args.start_classifier)
+        snipe_repo(args.host, args.repo, args.tag, args.index, args.first, args.run_on_folder, args.find_secrets)
 
     elif args.command == "clone":
         # Access and log dump arguments
